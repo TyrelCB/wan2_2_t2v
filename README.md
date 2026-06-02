@@ -1,21 +1,25 @@
-# Wan 2.2 14B Text-to-Video
+# Wan 2.2 14B Video Generation
 
-Gradio UI and MCP server for generating video from text using the [Wan 2.2 14B](https://github.com/Wan-Video/Wan2.1) model via ComfyUI.
-
-Uses a dual-pass LightX2V sampling approach (high-noise → low-noise UNETs) to generate 848×480 video in 4 steps.
+Gradio UI and MCP server for four [Wan 2.2 14B](https://github.com/Wan-Video/Wan2.1) video generation workflows via ComfyUI.
 
 ## Requirements
 
 - ComfyUI running with the Wan 2.2 14B models loaded
 - Python 3.10+
 
-```
+```bash
 pip install -r requirements.txt
 ```
 
-## Models
+## Configuration
 
-Place these in your ComfyUI model directories:
+Set `COMFY_URL` to point at your ComfyUI instance (default: `http://192.168.6.181:8188`):
+
+```bash
+export COMFY_URL=http://your-comfyui-host:8188
+```
+
+## Models
 
 | File | Directory |
 |------|-----------|
@@ -23,16 +27,14 @@ Place these in your ComfyUI model directories:
 | `wan_2.1_vae.safetensors` | `models/vae/` |
 | `wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors` | `models/unet/` |
 | `wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors` | `models/unet/` |
+| `wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors` | `models/unet/` |
+| `wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors` | `models/unet/` |
+| `wan2.2_s2v_14B_fp8_scaled.safetensors` | `models/unet/` |
 | `wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors` | `models/loras/` |
 | `wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors` | `models/loras/` |
-
-## Configuration
-
-Set the `COMFY_URL` environment variable to point at your ComfyUI instance (default: `http://192.168.6.181:8188`):
-
-```bash
-export COMFY_URL=http://your-comfyui-host:8188
-```
+| `wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors` | `models/loras/` |
+| `wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors` | `models/loras/` |
+| `wav2vec2_large_english_fp16.safetensors` | `models/audio_encoder/` |
 
 ## Gradio UI
 
@@ -40,7 +42,19 @@ export COMFY_URL=http://your-comfyui-host:8188
 python app.py
 ```
 
-Open `http://localhost:7860`. Enter a prompt, adjust resolution/frames/seed/FPS, and click **Generate**. The status bar shows the resolved seed and generation time.
+Open `http://localhost:7860`. Four tabs:
+
+### Text to Video
+Generate video from a text prompt. Dual-pass LightX2V sampling (4 steps). Default resolution 848×480.
+
+### Image to Video
+Animate a start frame image guided by a text prompt. Same dual-pass architecture as T2V. Default resolution 512×512.
+
+### Talking Head
+Animate a reference face image driven by an audio file. Chunked `WanSoundImageToVideo` generation — audio length determines output duration. Default chunk size 43 frames.
+
+### First/Last Frame
+Upload 6 keyframes and interpolate between each consecutive pair using `WanFirstLastFrameToVideo`. Generates 5 segments of 33 frames each (≈10s at 16fps) and concatenates them. Default resolution 960×544.
 
 ## MCP Server
 
@@ -48,21 +62,50 @@ Open `http://localhost:7860`. Enter a prompt, adjust resolution/frames/seed/FPS,
 python mcp_server.py
 ```
 
-Runs a FastMCP streamable-HTTP server on `http://0.0.0.0:8000/mcp`.
+FastMCP streamable-HTTP server on `http://0.0.0.0:8000/mcp` with CORS enabled.
 
-Add it to your MCP client with the URL `http://<host>:8000/mcp`.
+### Tools
 
-### Tool: `generate_wan_video`
+#### `generate_wan_video`
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `prompt` | — | Text description |
+| `width` | 848 | Frame width |
+| `height` | 480 | Frame height |
+| `length` | 81 | Number of frames |
+| `seed` | -1 | Random seed (-1 = random) |
+| `fps` | 16 | Output FPS |
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `prompt` | str | — | Text description of the video |
-| `width` | int | 848 | Frame width in pixels |
-| `height` | int | 480 | Frame height in pixels |
-| `length` | int | 81 | Number of frames (~5s at 16fps) |
-| `seed` | int | -1 | Random seed (-1 = random) |
-| `fps` | int | 16 | Output frames per second |
+#### `generate_wan_i2v`
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `image_path` | — | Absolute path to start frame |
+| `prompt` | — | Text description of motion |
+| `width` | 512 | Frame width |
+| `height` | 512 | Frame height |
+| `length` | 81 | Number of frames |
+| `seed` | -1 | Random seed |
+| `fps` | 16 | Output FPS |
 
-Returns `{"path": "/absolute/path/to/video.mp4", "filename": "..."}`.
+#### `generate_wan_s2v`
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `image_path` | — | Absolute path to reference face image |
+| `audio_path` | — | Absolute path to audio file (WAV) |
+| `prompt` | `""` | Optional text prompt |
+| `seed` | -1 | Random seed |
+| `fps` | 16 | Output FPS |
+| `chunk_length` | 43 | Frames per generation chunk |
 
-Videos are saved to `./outputs/`.
+#### `generate_wan_flf2v`
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `frame1_path`–`frame6_path` | — | Absolute paths to 6 keyframes in order |
+| `prompt` | `""` | Optional text prompt |
+| `width` | 960 | Frame width |
+| `height` | 544 | Frame height |
+| `frames_per_segment` | 33 | Frames generated between each keyframe pair |
+| `seed` | -1 | Random seed |
+| `fps` | 16 | Output FPS |
+
+All tools return `{"path": "/absolute/path/to/video.mp4", "filename": "..."}`. Videos are saved to `./outputs/`.
