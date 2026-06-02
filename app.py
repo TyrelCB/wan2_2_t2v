@@ -113,6 +113,36 @@ def generate_s2v(image_path, audio_path, prompt, seed, fps, chunk_length, progre
         yield gr.update(value=None), gr.update(value=f"Error: {e}")
 
 
+# ── FLF2V (6-keyframe) ────────────────────────────────────────────────────────
+
+def generate_flf2v(kf1, kf2, kf3, kf4, kf5, kf6, prompt, width, height, frames, seed, fps, progress=gr.Progress()):
+    paths = [kf1, kf2, kf3, kf4, kf5, kf6]
+    if any(p is None for p in paths):
+        yield gr.update(), gr.update(value="Error: all 6 keyframe images are required")
+        return
+    resolved_seed = random.randint(0, 2**32 - 1) if seed < 0 else int(seed)
+    yield gr.update(value=None), gr.update(value=f"Uploading 6 keyframes… seed: {resolved_seed}")
+    try:
+        image_bytes_list = [Path(p).read_bytes() for p in paths]
+        image_filenames = [Path(p).name for p in paths]
+        stored = [comfy_client.upload_image(b, f) for b, f in zip(image_bytes_list, image_filenames)]
+        wf = comfy_client.build_flf2v_workflow(
+            stored, prompt=prompt, width=int(width), height=int(height),
+            frames_per_segment=int(frames), seed=resolved_seed, fps=int(fps),
+        )
+        prompt_id = comfy_client.submit(wf)
+        t_start = time.time()
+        yield gr.update(value=None), gr.update(value=f"Queued — seed: {resolved_seed}  |  id: {prompt_id}")
+        data = comfy_client.poll(prompt_id, timeout=900.0, on_progress=_progress_fn(progress, resolved_seed))
+        yield gr.update(value=None), gr.update(value="Downloading…")
+        video_info = data["outputs"]["save"]["images"][0]
+        video_bytes = comfy_client.download_video(video_info)
+        path, status = _save_and_return(video_bytes, video_info["filename"], t_start, resolved_seed)
+        yield gr.update(value=path), gr.update(value=status)
+    except Exception as e:
+        yield gr.update(value=None), gr.update(value=f"Error: {e}")
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 with gr.Blocks(title="Wan 2.2") as demo:
@@ -176,6 +206,35 @@ with gr.Blocks(title="Wan 2.2") as demo:
             s2v_btn.click(fn=generate_s2v,
                           inputs=[s2v_image, s2v_audio, s2v_prompt, s2v_seed, s2v_fps, s2v_chunk],
                           outputs=[s2v_video, s2v_status])
+
+        with gr.Tab("First/Last Frame"):
+            with gr.Row():
+                with gr.Column(scale=2):
+                    gr.Markdown("Upload 6 keyframes in order. Each consecutive pair generates one segment.")
+                    with gr.Row():
+                        flf_kf1 = gr.Image(label="Frame 1 (start)", type="filepath")
+                        flf_kf2 = gr.Image(label="Frame 2", type="filepath")
+                        flf_kf3 = gr.Image(label="Frame 3", type="filepath")
+                    with gr.Row():
+                        flf_kf4 = gr.Image(label="Frame 4", type="filepath")
+                        flf_kf5 = gr.Image(label="Frame 5", type="filepath")
+                        flf_kf6 = gr.Image(label="Frame 6 (end)", type="filepath")
+                    flf_prompt = gr.Textbox(label="Prompt (optional)", lines=2)
+                    with gr.Row():
+                        flf_width = gr.Number(label="Width", value=960, precision=0)
+                        flf_height = gr.Number(label="Height", value=544, precision=0)
+                    with gr.Row():
+                        flf_frames = gr.Number(label="Frames/segment", value=33, precision=0)
+                        flf_fps = gr.Number(label="FPS", value=16, precision=0)
+                    flf_seed = gr.Number(label="Seed (-1 = random)", value=-1, precision=0)
+                    flf_btn = gr.Button("Generate", variant="primary")
+                with gr.Column(scale=3):
+                    flf_video = gr.Video(label="Output Video")
+                    flf_status = gr.Textbox(label="Status", interactive=False, lines=2)
+            flf_btn.click(fn=generate_flf2v,
+                          inputs=[flf_kf1, flf_kf2, flf_kf3, flf_kf4, flf_kf5, flf_kf6,
+                                  flf_prompt, flf_width, flf_height, flf_frames, flf_seed, flf_fps],
+                          outputs=[flf_video, flf_status])
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)

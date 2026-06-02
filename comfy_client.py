@@ -184,6 +184,84 @@ def build_s2v_workflow(
     wf["82"]["inputs"]["fps"] = fps
     return wf
 
+# ── FLF2V (6-keyframe) ────────────────────────────────────────────────────────
+
+_NEG_FLF = (
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，"
+    "JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
+    "形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+)
+
+def _flf_segment(prefix: str, start_ref: str, end_ref: str, neg_ref: str, decode_out: str) -> dict:
+    """Build one FLF2V segment block (dual-pass LightX2V I2V LoRAs)."""
+    return {
+        f"{prefix}:clip":  {"inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "default"}, "class_type": "CLIPLoader"},
+        f"{prefix}:neg":   {"inputs": {"text": _NEG_FLF, "clip": [f"{prefix}:clip", 0]}, "class_type": "CLIPTextEncode"},
+        f"{prefix}:pos":   {"inputs": {"text": "", "clip": [f"{prefix}:clip", 0]}, "class_type": "CLIPTextEncode"},
+        f"{prefix}:vae":   {"inputs": {"vae_name": "wan_2.1_vae.safetensors"}, "class_type": "VAELoader"},
+        f"{prefix}:uhi":   {"inputs": {"unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        f"{prefix}:ulo":   {"inputs": {"unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors", "weight_dtype": "default"}, "class_type": "UNETLoader"},
+        f"{prefix}:lhi":   {"inputs": {"lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors", "strength_model": 1, "model": [f"{prefix}:uhi", 0]}, "class_type": "LoraLoaderModelOnly"},
+        f"{prefix}:llo":   {"inputs": {"lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors", "strength_model": 1, "model": [f"{prefix}:ulo", 0]}, "class_type": "LoraLoaderModelOnly"},
+        f"{prefix}:mhi":   {"inputs": {"shift": 5, "model": [f"{prefix}:lhi", 0]}, "class_type": "ModelSamplingSD3"},
+        f"{prefix}:mlo":   {"inputs": {"shift": 5, "model": [f"{prefix}:llo", 0]}, "class_type": "ModelSamplingSD3"},
+        f"{prefix}:flf":   {"inputs": {"width": 960, "height": 544, "length": 33, "batch_size": 1, "positive": [f"{prefix}:pos", 0], "negative": [f"{prefix}:neg", 0], "vae": [f"{prefix}:vae", 0], "start_image": [start_ref, 0], "end_image": [end_ref, 0]}, "class_type": "WanFirstLastFrameToVideo"},
+        f"{prefix}:khi":   {"inputs": {"add_noise": "enable", "noise_seed": 0, "steps": 4, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "start_at_step": 0, "end_at_step": 2, "return_with_leftover_noise": "enable", "model": [f"{prefix}:mhi", 0], "positive": [f"{prefix}:flf", 0], "negative": [f"{prefix}:flf", 1], "latent_image": [f"{prefix}:flf", 2]}, "class_type": "KSamplerAdvanced"},
+        f"{prefix}:klo":   {"inputs": {"add_noise": "disable", "noise_seed": 0, "steps": 4, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "start_at_step": 2, "end_at_step": 10000, "return_with_leftover_noise": "disable", "model": [f"{prefix}:mlo", 0], "positive": [f"{prefix}:flf", 0], "negative": [f"{prefix}:flf", 1], "latent_image": [f"{prefix}:khi", 0]}, "class_type": "KSamplerAdvanced"},
+        decode_out:        {"inputs": {"samples": [f"{prefix}:klo", 0], "vae": [f"{prefix}:vae", 0]}, "class_type": "VAEDecode"},
+    }
+
+# Segment decode output node IDs (referenced by the ImageBatch concat chain)
+_SEG_DECODE = ["s1:dec", "s2:dec", "s3:dec", "s4:dec", "s5:dec"]
+_SEG_PREFIXES = ["s1", "s2", "s3", "s4", "s5"]
+# Keyframe image node IDs
+_KF_NODES = ["kf1", "kf2", "kf3", "kf4", "kf5", "kf6"]
+
+def _build_flf2v_base() -> dict:
+    wf: dict = {}
+    # Keyframe LoadImage nodes
+    for node_id in _KF_NODES:
+        wf[node_id] = {"inputs": {"image": ""}, "class_type": "LoadImage"}
+    # 5 segments: consecutive keyframe pairs
+    pairs = list(zip(_KF_NODES, _KF_NODES[1:]))
+    for prefix, decode_out, (start_ref, end_ref) in zip(_SEG_PREFIXES, _SEG_DECODE, pairs):
+        wf.update(_flf_segment(prefix, start_ref, end_ref, f"{prefix}:neg", decode_out))
+    # Concat chain: batch all decoded frame tensors
+    wf["batch1"] = {"inputs": {"image1": [_SEG_DECODE[0], 0], "image2": [_SEG_DECODE[1], 0]}, "class_type": "ImageBatch"}
+    wf["batch2"] = {"inputs": {"image1": ["batch1", 0], "image2": [_SEG_DECODE[2], 0]}, "class_type": "ImageBatch"}
+    wf["batch3"] = {"inputs": {"image1": ["batch2", 0], "image2": [_SEG_DECODE[3], 0]}, "class_type": "ImageBatch"}
+    wf["batch4"] = {"inputs": {"image1": ["batch3", 0], "image2": [_SEG_DECODE[4], 0]}, "class_type": "ImageBatch"}
+    wf["cv"]     = {"inputs": {"fps": 16, "images": ["batch4", 0]}, "class_type": "CreateVideo"}
+    wf["save"]   = {"inputs": {"filename_prefix": "video/flf2v", "format": "auto", "codec": "auto", "video-preview": "", "video": ["cv", 0]}, "class_type": "SaveVideo"}
+    return wf
+
+FLF2V_BASE_WORKFLOW = _build_flf2v_base()
+
+
+def build_flf2v_workflow(
+    image_filenames: list[str],  # exactly 6
+    prompt: str = "",
+    width: int = 960,
+    height: int = 544,
+    frames_per_segment: int = 33,
+    seed: int | None = None,
+    fps: int = 16,
+) -> dict:
+    if len(image_filenames) != 6:
+        raise ValueError(f"Expected 6 keyframe images, got {len(image_filenames)}")
+    base_seed = seed if seed is not None else random.randint(0, 2**32 - 1)
+    wf = copy.deepcopy(FLF2V_BASE_WORKFLOW)
+    for node_id, filename in zip(_KF_NODES, image_filenames):
+        wf[node_id]["inputs"]["image"] = filename
+    for i, prefix in enumerate(_SEG_PREFIXES):
+        wf[f"{prefix}:pos"]["inputs"]["text"] = prompt
+        wf[f"{prefix}:flf"]["inputs"]["width"] = width
+        wf[f"{prefix}:flf"]["inputs"]["height"] = height
+        wf[f"{prefix}:flf"]["inputs"]["length"] = frames_per_segment
+        wf[f"{prefix}:khi"]["inputs"]["noise_seed"] = (base_seed + i) % (2**32)
+    wf["cv"]["inputs"]["fps"] = fps
+    return wf
+
 # ── Core API ──────────────────────────────────────────────────────────────────
 
 def submit(workflow: dict) -> str:
@@ -284,4 +362,23 @@ def generate_s2v(
     prompt_id = submit(wf)
     data = poll(prompt_id, on_progress=on_progress)
     video_info = data["outputs"]["113"]["images"][0]
+    return download_video(video_info), video_info["filename"]
+
+
+def generate_flf2v(
+    image_bytes_list: list[bytes],
+    image_filenames: list[str],
+    prompt: str = "",
+    width: int = 960,
+    height: int = 544,
+    frames_per_segment: int = 33,
+    seed: int | None = None,
+    fps: int = 16,
+    on_progress=None,
+) -> tuple[bytes, str]:
+    stored = [upload_image(b, f) for b, f in zip(image_bytes_list, image_filenames)]
+    wf = build_flf2v_workflow(stored, prompt, width, height, frames_per_segment, seed, fps)
+    prompt_id = submit(wf)
+    data = poll(prompt_id, timeout=900.0, on_progress=on_progress)
+    video_info = data["outputs"]["save"]["images"][0]
     return download_video(video_info), video_info["filename"]
