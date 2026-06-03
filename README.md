@@ -80,7 +80,7 @@ Upload 6 keyframes and interpolate between each consecutive pair using `WanFirst
 python mcp_server.py
 ```
 
-FastMCP streamable-HTTP server on `http://0.0.0.0:8000/mcp` with CORS enabled. Override the port with `MCP_PORT`.
+FastMCP streamable-HTTP server on `http://0.0.0.0:8001/mcp` with CORS enabled. Override the port with `MCP_PORT` (default: 8000).
 
 ### Tools
 
