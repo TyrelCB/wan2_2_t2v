@@ -60,7 +60,7 @@ sudo journalctl -u wan2 -f
 python app.py
 ```
 
-Open `http://localhost:7860` (or the port set by `GRADIO_SERVER_PORT`). Four tabs:
+Open `http://localhost:7862` (or the port set by `GRADIO_SERVER_PORT`). Four tabs:
 
 ### Text to Video
 Generate video from a text prompt. Dual-pass LightX2V sampling (4 steps). Default resolution 848×480.
