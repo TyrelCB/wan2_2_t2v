@@ -38,20 +38,20 @@ export COMFY_URL=http://your-comfyui-host:8188
 
 ## Systemd Service
 
-A service file is included for running the Gradio UI on boot. Edit `User`, `WorkingDirectory`, and `GRADIO_SERVER_PORT` to match your setup, then:
+`wan2.service` runs both the Gradio UI and MCP server together via `start.sh`. Edit `User`, `WorkingDirectory`, `GRADIO_SERVER_PORT`, and `MCP_PORT` to match your setup, then:
 
 ```bash
-sudo cp wan2-ui-mcp.service /etc/systemd/system/
+sudo cp wan2.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable wan2-ui-mcp
-sudo systemctl start wan2-ui-mcp
+sudo systemctl enable wan2
+sudo systemctl start wan2
 ```
 
 Check status and logs:
 
 ```bash
-sudo systemctl status wan2-ui-mcp
-sudo journalctl -u wan2-ui-mcp -f
+sudo systemctl status wan2
+sudo journalctl -u wan2 -f
 ```
 
 ## Gradio UI
@@ -80,7 +80,7 @@ Upload 6 keyframes and interpolate between each consecutive pair using `WanFirst
 python mcp_server.py
 ```
 
-FastMCP streamable-HTTP server on `http://0.0.0.0:8000/mcp` with CORS enabled.
+FastMCP streamable-HTTP server on `http://0.0.0.0:8000/mcp` with CORS enabled. Override the port with `MCP_PORT`.
 
 ### Tools
 
